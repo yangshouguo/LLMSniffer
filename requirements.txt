@@ -1,2 +1,4 @@
 aiohttp>=3.9.0
 rich>=13.0.0
+# Optional: only needed for --mode mitm (non-intrusive forward proxy)
+mitmproxy>=10.0.0

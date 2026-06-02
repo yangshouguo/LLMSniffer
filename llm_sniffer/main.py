@@ -3,6 +3,7 @@
 import argparse
 import sys
 from .proxy import LLMProxy
+from .mitm_mode import MitmProxyRunner
 from .filter import FilterConfig
 
 
@@ -14,17 +15,18 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Start with defaults (proxies to api.openai.com)
-  llm-sniffer
+  # Reverse proxy mode (change client base_url)
+  llm-sniffer                       # default: forward to api.openai.com
+  llm-sniffer -p 9999 -t https://api.anthropic.com
 
-  # Custom port and target
-  llm-sniffer --port 9999 --target https://api.anthropic.com
+  # Non-intrusive mitm mode (just set env var, no code changes)
+  llm-sniffer --mode mitm
+  # Then in another terminal:
+  #   export HTTPS_PROXY=http://localhost:8888
+  #   python my_llm_app.py          # runs normally!
 
   # Filter to only show gpt-4 calls
   llm-sniffer --filter-model "gpt-4*"
-
-  # Filter by API URL
-  llm-sniffer --filter-url "*openai*"
 
   # Exclude certain models
   llm-sniffer --exclude-model "gpt-3.5*"
@@ -32,20 +34,15 @@ Examples:
   # Regex mode
   llm-sniffer --pattern-mode regex --filter-model "gpt-4|claude"
 
-Client Setup:
+Client Setup (reverse mode):
   1. Set your LLM client's base_url to: http://localhost:8888/v1
-  2. The proxy will forward to --target (default: https://api.openai.com)
-  3. Add header 'X-LLM-Target: https://your-api.com' for per-request override
+  2. The proxy forwards to --target (default: https://api.openai.com)
+  3. Or add header 'X-LLM-Target: https://your-api.com' to override
 
-  For OpenAI Python SDK:
-    client = OpenAI(base_url="http://localhost:8888/v1", api_key="sk-...")
-
-  For curl:
-    curl http://localhost:8888/v1/chat/completions \\
-      -H "Content-Type: application/json" \\
-      -H "Authorization: Bearer sk-..." \\
-      -H "X-LLM-Target: https://api.openai.com" \\
-      -d '{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}'
+Client Setup (mitm mode):
+  1. Set env: export HTTPS_PROXY=http://localhost:8888
+  2. Run your LLM app normally - NO code changes needed!
+  3. Works with all LLM SDKs (OpenAI, Anthropic, LangChain, etc.)
 """,
     )
 
@@ -65,7 +62,13 @@ Client Setup:
     server.add_argument(
         "-t", "--target",
         default="https://api.openai.com",
-        help="Default target API base URL to forward requests to (default: https://api.openai.com)",
+        help="Default target API base URL (reverse mode only, default: https://api.openai.com)",
+    )
+    server.add_argument(
+        "-m", "--mode",
+        choices=["reverse", "mitm"],
+        default="reverse",
+        help="Proxy mode: 'reverse' (change base_url) or 'mitm' (set HTTPS_PROXY, zero code changes) (default: reverse)",
     )
 
     # Filter options
@@ -133,17 +136,25 @@ def main():
     # Build filter config
     filter_config = FilterConfig.from_args(args)
 
-    # Build and run proxy
-    proxy = LLMProxy(
-        listen_host=args.host,
-        listen_port=args.port,
-        default_target=args.target,
-        filter_config=filter_config,
-        log_dir=args.output,
-        no_tui=args.no_tui,
-    )
+    if args.mode == "mitm":
+        runner = MitmProxyRunner(
+            listen_host=args.host,
+            listen_port=args.port,
+            filter_config=filter_config,
+            log_dir=args.output,
+            no_tui=args.no_tui,
+        )
+    else:
+        runner = LLMProxy(
+            listen_host=args.host,
+            listen_port=args.port,
+            default_target=args.target,
+            filter_config=filter_config,
+            log_dir=args.output,
+            no_tui=args.no_tui,
+        )
 
-    proxy.run()
+    runner.run()
 
 
 if __name__ == "__main__":

@@ -4,16 +4,25 @@ A Wireshark-like traffic capture tool for LLM API calls. Intercepts, displays, a
 
 ## Features
 
-- **Traffic Interception**: Acts as a reverse proxy, capturing all LLM API calls
+- **Traffic Interception**: Captures all LLM API calls — two modes available
 - **AFL-Fuzz Style TUI**: Real-time terminal display showing captures, stats, and model breakdown
 - **Flexible Filtering**: Filter captures by base_url, model name, or API key (glob/regex/exact)
 - **File Logging**: All captures saved to JSONL files for later analysis
 - **Multi-Provider**: Works with any OpenAI-compatible API (OpenAI, Anthropic, Groq, local models, etc.)
 
+## Two Modes
+
+| | Reverse Mode | mitm Mode |
+|---|---|---|
+| **How it works** | Change `base_url` → our proxy | Set `HTTPS_PROXY` env var |
+| **Code changes** | Yes (1 line) | **None** |
+| **Dependencies** | aiohttp, rich | aiohttp, rich, **mitmproxy** |
+| **HTTPS support** | Direct (plain HTTP from client) | Via mitmproxy CA cert |
+| **Best for** | Development, local testing | Existing apps, zero-touch capture |
+
 ## Installation
 
 ```bash
-# Clone and install
 cd LLMDump
 pip install -e .
 
@@ -23,62 +32,61 @@ pip install -r requirements.txt
 
 ## Quick Start
 
+### Non-intrusive mode (recommended) — zero code changes
+
 ```bash
-# Start the sniffer (default: listen on :8888, forward to api.openai.com)
+# Terminal 1: start the sniffer
+llm-sniffer --mode mitm
+
+# Terminal 2: set proxy env and run your app
+export HTTPS_PROXY=http://localhost:8888
+export HTTP_PROXY=http://localhost:8888
+python my_llm_app.py    # ← runs completely normally!
+```
+
+This works because every major LLM SDK (OpenAI, Anthropic, LangChain, llama-index, LiteLLM, etc.) uses `httpx`/`requests`/`aiohttp` under the hood, which all respect `HTTP_PROXY`/`HTTPS_PROXY`. Your app code stays untouched.
+
+### Reverse proxy mode — simple, no certificate needed
+
+```bash
+# Start the sniffer
 llm-sniffer
 
-# Custom port and target
-llm-sniffer --port 9999 --target https://api.anthropic.com
-
-# With filters
-llm-sniffer --filter-model "gpt-4*" --filter-url "*openai*"
-```
-
-Then configure your LLM client to use the sniffer as a proxy:
-
-**OpenAI Python SDK:**
-```python
+# Then point your client to it
+# OpenAI Python SDK:
 from openai import OpenAI
-client = OpenAI(
-    base_url="http://localhost:8888/v1",
-    api_key="sk-your-key-here"
-)
-```
-
-**Any OpenAI-compatible client:**
-Set `base_url` or `OPENAI_BASE_URL` to `http://localhost:8888/v1`
-
-**curl:**
-```bash
-curl http://localhost:8888/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-..." \
-  -H "X-LLM-Target: https://api.openai.com" \
-  -d '{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}'
+client = OpenAI(base_url="http://localhost:8888/v1", api_key="sk-...")
 ```
 
 ## How It Works
 
 ```
-LLM Client ──→ LLM Sniffer (:8888) ──→ Actual API (api.openai.com)
-                  │
-                  ├── TUI Display (afl-fuzz style)
-                  └── Log Files (JSONL)
+Reverse Mode:
+  LLM Client ──→ LLM Sniffer (:8888) ──→ Actual API (api.openai.com)
+  (base_url changed)      │
+                           ├── TUI Display (afl-fuzz style)
+                           └── Log Files (JSONL)
+
+mitm Mode:
+  LLM Client ──→ HTTPS_PROXY ──→ LLM Sniffer (:8888) ──→ Actual API
+  (no code changes!)                        │
+                                            ├── TUI Display
+                                            └── Log Files (JSONL)
 ```
 
-1. The sniffer runs as a reverse proxy on your local machine
-2. Your LLM client sends requests to the sniffer instead of directly to the API
-3. The sniffer forwards requests to the real API and captures everything
-4. All traffic is displayed in the terminal and saved to JSONL log files
-
 ## CLI Options
+
+### Mode
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-m`, `--mode` | `reverse` | `reverse` (change base_url) or `mitm` (set HTTPS_PROXY) |
 
 ### Server Options
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--host` | `0.0.0.0` | Listen address |
 | `-p`, `--port` | `8888` | Listen port |
-| `-t`, `--target` | `https://api.openai.com` | Default upstream API URL |
+| `-t`, `--target` | `https://api.openai.com` | Upstream API URL (reverse mode only) |
 
 ### Filter Options
 | Flag | Description |
