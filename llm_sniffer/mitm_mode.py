@@ -182,48 +182,108 @@ class MitmProxyRunner:
         self.display.add_capture(cap, self._get_stats_snapshot())
 
     def _setup_mitm_cert(self):
-        """Ensure mitmproxy CA cert exists. Print trust instructions if needed."""
+        """Ensure mitmproxy CA cert exists and is trusted everywhere.
+
+        macOS `security add-trusted-cert` handles system keychain
+        (Safari, curl, etc.) but Python's ssl module uses its own
+        trust bundle (certifi). We handle both.
+        """
         import os
         import subprocess
 
         cert_dir = Path.home() / ".mitmproxy"
         cert_path = cert_dir / "mitmproxy-ca-cert.pem"
 
-        # mitmproxy auto-generates the cert on first run, but we can
-        # trigger it early by running a quick mitmdump in the background
+        # mitmproxy auto-generates the cert on first run
         if not cert_path.exists():
             print("  Generating mitmproxy CA certificate ...")
             cert_dir.mkdir(parents=True, exist_ok=True)
-            # Run mitmdump briefly to trigger cert generation
             try:
                 subprocess.run(
                     [sys.executable, "-m", "mitmproxy", "--version"],
                     capture_output=True, timeout=10,
                 )
             except Exception:
-                pass  # cert will be generated when mitm thread starts
+                pass
 
-        # Check if cert is trusted on macOS
-        if sys.platform == "darwin" and cert_path.exists():
+        if not cert_path.exists():
+            return  # cert will be generated when mitm thread starts
+
+        needs_macos = False
+        needs_python = False
+
+        # -- Check macOS keychain --
+        if sys.platform == "darwin":
             try:
                 result = subprocess.run(
                     ["security", "verify-cert", "-c", str(cert_path)],
                     capture_output=True, text=True, timeout=5,
                 )
                 if result.returncode != 0:
-                    self._print_cert_trust_instructions(cert_path)
+                    needs_macos = True
             except Exception:
-                self._print_cert_trust_instructions(cert_path)
+                needs_macos = True
 
-    def _print_cert_trust_instructions(self, cert_path):
-        """Print instructions for trusting the mitmproxy CA cert."""
-        print(f"\n  ╔══════════════════════════════════════════════════════════════╗")
-        print(f"  ║  mitmproxy CA cert is NOT trusted yet                     ║")
-        print(f"  ║  HTTPS traffic will fail with certificate errors.          ║")
-        print(f"  ║  Trust it now (macOS, needs sudo):                         ║")
-        print(f"  ║                                                            ║")
-        print(f"  ║  sudo security add-trusted-cert -d -p ssl {cert_path}")
-        print(f"  ╚══════════════════════════════════════════════════════════════╝\n")
+        # -- Check Python certifi bundle --
+        try:
+            import certifi
+            certifi_bundle = Path(certifi.where())
+            mitm_cert_pem = cert_path.read_bytes()
+            if mitm_cert_pem not in certifi_bundle.read_bytes():
+                needs_python = True
+        except ImportError:
+            needs_python = True  # no certifi → fall back to SSL_CERT_FILE
+
+        if needs_macos or needs_python:
+            self._print_cert_trust_instructions(cert_path, needs_macos, needs_python)
+
+    def _print_cert_trust_instructions(self, cert_path, needs_macos: bool, needs_python: bool):
+        """Print OS-appropriate cert trust instructions."""
+        cert_path_str = str(cert_path)
+
+        print(f"\n  ╔══════════════════════════════════════════════════════════════════╗")
+        print(f"  ║  mitmproxy CA cert needs to be trusted                         ║")
+        print(f"  ╚══════════════════════════════════════════════════════════════════╝")
+
+        if needs_macos:
+            print(f"\n  ── Step 1: macOS system trust (for curl, Safari, etc.) ──")
+            print(f"  sudo security add-trusted-cert -d -p ssl {cert_path_str}")
+
+        if needs_python:
+            print(f"\n  ── Step 2: Python trust (for openai SDK, urllib, etc.) ──")
+            # Check if we can auto-append to certifi
+            try:
+                import certifi
+                certifi_path = Path(certifi.where())
+                mitm_cert_pem = Path(cert_path).read_bytes()
+                existing = certifi_path.read_bytes()
+                if mitm_cert_pem not in existing:
+                    # Append automatically
+                    certifi_path.write_bytes(existing + b"\n" + mitm_cert_pem)
+                    print(f"  ✓ Automatically added to certifi: {certifi_path}")
+                else:
+                    print(f"  ✓ Already in certifi: {certifi_path}")
+            except (ImportError, PermissionError, OSError):
+                print(f"  Option A: Set env var (per-session):")
+                print(f"    export SSL_CERT_FILE={cert_path_str}")
+                print(f"  Option B: Append to certifi (permanent):")
+                print(f"    cat {cert_path_str} >> $(python -c 'import certifi; print(certifi.where())')")
+                print(f"  Option C: Set env var pointing to merged bundle:")
+                print(f"    export SSL_CERT_FILE={cert_path_str}")
+                print(f"    export REQUESTS_CA_BUNDLE={cert_path_str}")
+
+        print()
+
+    @staticmethod
+    def _wait_for_enter():
+        """Block until user presses Enter."""
+        print()
+        try:
+            input("  Press ENTER after you've set up the environment and certificates ...")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(0)
+        print()
 
     def run(self):
         """Start the mitmproxy-based sniffer (blocking call)."""
@@ -273,7 +333,8 @@ class MitmProxyRunner:
         print(f"    export HTTP_PROXY=http://localhost:{self.listen_port}")
         print(f"  Then run your LLM application normally - no code changes needed!")
         print(f"  Logs: {self.logger.log_dir}")
-        print(f"  Press Ctrl+C to stop\n")
+        # --- Wait for user confirmation ---
+        self._wait_for_enter()
 
         # --- Start TUI on main thread ---
         self.display.start()
