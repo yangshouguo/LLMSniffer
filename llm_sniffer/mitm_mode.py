@@ -254,31 +254,27 @@ class MitmProxyRunner:
         print(f"  ╚══════════════════════════════════════════════════════════════════╝")
 
         if needs_macos:
-            print(f"\n  ── Step 1: macOS system trust (for curl, Safari, etc.) ──")
+            print(f"\n  ── macOS system trust (curl, Safari, Go apps, etc.) ──")
             print(f"  sudo security add-trusted-cert -d -p ssl {cert_path_str}")
 
         if needs_python:
-            print(f"\n  ── Step 2: Python trust (for openai SDK, urllib, etc.) ──")
-            # Check if we can auto-append to certifi
+            print(f"\n  ── Python trust (openai SDK, requests, urllib) ──")
             try:
                 import certifi
                 certifi_path = Path(certifi.where())
                 mitm_cert_pem = Path(cert_path).read_bytes()
                 existing = certifi_path.read_bytes()
                 if mitm_cert_pem not in existing:
-                    # Append automatically
                     certifi_path.write_bytes(existing + b"\n" + mitm_cert_pem)
                     print(f"  ✓ Automatically added to certifi: {certifi_path}")
                 else:
                     print(f"  ✓ Already in certifi: {certifi_path}")
             except (ImportError, PermissionError, OSError):
-                print(f"  Option A: Set env var (per-session):")
-                print(f"    export SSL_CERT_FILE={cert_path_str}")
-                print(f"  Option B: Append to certifi (permanent):")
-                print(f"    cat {cert_path_str} >> $(python -c 'import certifi; print(certifi.where())')")
-                print(f"  Option C: Set env var pointing to merged bundle:")
-                print(f"    export SSL_CERT_FILE={cert_path_str}")
-                print(f"    export REQUESTS_CA_BUNDLE={cert_path_str}")
+                print(f"  export SSL_CERT_FILE={cert_path_str}")
+
+        # Node.js trust (Claude Code CLI, etc.)
+        print(f"\n  ── Node.js trust (Claude Code CLI, Copilot, etc.) ──")
+        print(f"  export NODE_EXTRA_CA_CERTS={cert_path_str}")
 
         print()
 

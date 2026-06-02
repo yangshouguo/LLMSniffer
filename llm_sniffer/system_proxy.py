@@ -198,24 +198,34 @@ def print_client_instructions(port: int):
   │  macOS system proxy (automatic, all apps):                    │
   │    use the --system-proxy flag (already active)               │
   │                                                               │
-  │  API clients that read HTTPS_PROXY env:                      │
+  │  Claude Code (CLI) / Node.js apps:                            │
+  │    export HTTPS_PROXY=http://localhost:{port}
+  │    export NODE_EXTRA_CA_CERTS=~/.mitmproxy/mitmproxy-ca-cert.pem
+  │                                                               │
+  │  Python apps (openai SDK, urllib, etc.):                     │
+  │    ✓ auto-trusted via certifi                                 │
   │    export HTTPS_PROXY=http://localhost:{port}
   │    export HTTP_PROXY=http://localhost:{port}
   │                                                               │
-  │  Claude Desktop (macOS):                                      │
+  │  Claude Desktop:                                              │
   │    Settings → Advanced → Proxy → Manual                       │
   │      HTTP Proxy:   http://localhost:{port}
   │      HTTPS Proxy:  http://localhost:{port}
   │                                                               │
-  │  Cursor:                                                      │
-  │    Settings → Http: Proxy → http://localhost:{port}
-  │    Or set env: CURSOR_PROXY=http://localhost:{port}
-  │                                                               │
-  │  VS Code / Copilot:                                           │
+  │  Cursor / VS Code / Copilot:                                  │
   │    Settings → Http: Proxy → http://localhost:{port}
   │                                                               │
-  │  Claude Code (CLI):                                           │
+  │  Go / curl apps (trust macOS keychain):                       │
+  │    ✓ auto-trusted after: security add-trusted-cert            │
   │    export HTTPS_PROXY=http://localhost:{port}
+  │                                                               │
+  │  Java apps:                                                   │
+  │    export SSL_CERT_FILE=~/.mitmproxy/mitmproxy-ca-cert.pem    │
+  │    export HTTPS_PROXY=http://localhost:{port}
+  │                                                               │
+  │  💡 Pro tip: ~/.zshrc alias for quick setup:                  │
+  │    alias llm-sniff='export HTTPS_PROXY=http://localhost:{port}
+  │      && export NODE_EXTRA_CA_CERTS=~/.mitmproxy/mitmproxy-ca-cert.pem'
   │                                                               │
   │  Any app ignoring proxy settings?                             │
   │    Use transparent proxy: llm-sniffer --mode mitm --transparent│
