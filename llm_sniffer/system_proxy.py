@@ -13,6 +13,8 @@ from pathlib import Path
 
 _SYSTEM_PROXY_ACTIVE = False
 _SYSTEM_PROXY_PORT = 0
+# Saved previous proxy config so we can restore it on disable
+_saved_proxy_config: dict = {}
 
 
 def available() -> bool:
@@ -66,17 +68,41 @@ def get_active_network_service() -> Optional[str]:
         return "Wi-Fi"
 
 
+def _get_current_proxy_config(service: str) -> dict:
+    """Read current proxy host/port/state for HTTP and HTTPS proxies."""
+    config = {"web": {}, "secureweb": {}}
+    for proxy_type in ("web", "secureweb"):
+        try:
+            result = subprocess.run(
+                ["networksetup", f"-get{proxy_type}proxy", service],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.splitlines():
+                if ":" in line:
+                    key, val = line.split(":", 1)
+                    config[proxy_type][key.strip()] = val.strip()
+        except Exception:
+            pass
+    return config
+
+
 def enable_system_proxy(port: int = 8888) -> bool:
     """Set macOS system HTTP/HTTPS proxy.
 
-    Returns True if both HTTP and HTTPS proxies were set.
+    Saves the existing proxy configuration so it can be restored
+    on disable. Returns True if both HTTP and HTTPS proxies were set.
     """
-    global _SYSTEM_PROXY_ACTIVE, _SYSTEM_PROXY_PORT
+    global _SYSTEM_PROXY_ACTIVE, _SYSTEM_PROXY_PORT, _saved_proxy_config
 
     if not available():
         return False
 
     service = get_active_network_service()
+
+    # Save current proxy config before overwriting
+    _saved_proxy_config = _get_current_proxy_config(service)
+    had_proxy = _saved_proxy_config.get("web", {}).get("Enabled") == "Yes"
+
     print(f"\n  Setting system proxy on \"{service}\" to localhost:{port} ...")
 
     rc1, err1 = _run_networksetup("-setwebproxy", service, "127.0.0.1", str(port))
@@ -90,17 +116,23 @@ def enable_system_proxy(port: int = 8888) -> bool:
     _run_networksetup("-setwebproxystate", service, "on")
     _run_networksetup("-setsecurewebproxystate", service, "on")
 
+    # Only set flags after ALL commands succeed
     _SYSTEM_PROXY_ACTIVE = True
     _SYSTEM_PROXY_PORT = port
+
     print(f"  ✓ System proxy set to 127.0.0.1:{port}")
+    if had_proxy:
+        old_host = _saved_proxy_config.get("web", {}).get("Server", "?")
+        old_port = _saved_proxy_config.get("web", {}).get("Port", "?")
+        print(f"    (saved previous proxy {old_host}:{old_port} for restoration)")
     print(f"    Now Claude Desktop, Cursor, VS Code, and all macOS apps")
     print(f"    will route through the sniffer automatically.")
     return True
 
 
 def disable_system_proxy() -> bool:
-    """Restore macOS system proxy (disable our proxy)."""
-    global _SYSTEM_PROXY_ACTIVE
+    """Restore macOS system proxy to previous state."""
+    global _SYSTEM_PROXY_ACTIVE, _saved_proxy_config
 
     if not available() or not _SYSTEM_PROXY_ACTIVE:
         return False
@@ -108,10 +140,24 @@ def disable_system_proxy() -> bool:
     service = get_active_network_service()
     print(f"\n  Restoring system proxy on \"{service}\" ...")
 
-    rc1, _ = _run_networksetup("-setwebproxystate", service, "off")
-    rc2, _ = _run_networksetup("-setsecurewebproxystate", service, "off")
+    saved = _saved_proxy_config
+    if saved and saved.get("web", {}).get("Enabled") == "Yes":
+        # Restore previous proxy host/port
+        web_host = saved.get("web", {}).get("Server", "127.0.0.1")
+        web_port = saved.get("web", {}).get("Port", "8888")
+        _run_networksetup("-setwebproxy", service, web_host, web_port)
+        _run_networksetup("-setwebproxystate", service, "on")
 
-    if rc1 == 0 or rc2 == 0:
+        sec_host = saved.get("secureweb", {}).get("Server", web_host)
+        sec_port = saved.get("secureweb", {}).get("Port", web_port)
+        _run_networksetup("-setsecurewebproxy", service, sec_host, sec_port)
+        _run_networksetup("-setsecurewebproxystate", service, "on")
+
+        print(f"  ✓ Restored previous proxy ({web_host}:{web_port})")
+    else:
+        # No previous proxy — just disable
+        _run_networksetup("-setwebproxystate", service, "off")
+        _run_networksetup("-setsecurewebproxystate", service, "off")
         print(f"  ✓ System proxy disabled")
 
     _SYSTEM_PROXY_ACTIVE = False

@@ -1,6 +1,8 @@
 """Core reverse proxy server - intercepts LLM API traffic."""
 
 import asyncio
+import signal
+import sys
 import time
 import aiohttp
 from aiohttp import web
@@ -232,7 +234,13 @@ class LLMProxy:
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, self.listen_host, self.listen_port)
-        await site.start()
+        try:
+            await site.start()
+        except OSError as e:
+            print(f"\n  ERROR: Cannot bind to {self.listen_host}:{self.listen_port} — {e}")
+            print(f"  The port may be in use. Use -p PORT to specify a different port.")
+            await runner.cleanup()
+            sys.exit(1)
 
         try:
             # Keep running until interrupted
@@ -247,8 +255,15 @@ class LLMProxy:
 
     def run(self):
         """Run the proxy server (blocking)."""
+        # Handle SIGTERM like SIGINT so cleanup runs in Docker/systemd contexts
+        signal.signal(signal.SIGTERM, lambda signum, frame: self._handle_sigterm())
+
         try:
             asyncio.run(self.start())
         except KeyboardInterrupt:
             self.display.stop()
             print("\n\n  LLM Sniffer stopped.")
+
+    def _handle_sigterm(self):
+        """Trigger graceful shutdown on SIGTERM (Docker, systemd, CI)."""
+        raise KeyboardInterrupt()

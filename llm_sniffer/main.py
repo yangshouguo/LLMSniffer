@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+from . import __version__
 from .proxy import LLMProxy
 from .mitm_mode import MitmProxyRunner
 from .filter import FilterConfig
@@ -19,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="llm-sniffer",
         description="LLM Sniffer - Capture and display LLM API traffic (like wireshark for LLMs)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=True,
         epilog="""
 Examples:
   # Reverse proxy mode (change client base_url)
@@ -55,8 +57,8 @@ Client Setup (mitm mode):
     server = parser.add_argument_group("Server Options")
     server.add_argument(
         "--host",
-        default="0.0.0.0",
-        help="Host to listen on (default: 0.0.0.0)",
+        default="127.0.0.1",
+        help="Host to listen on (default: 127.0.0.1)",
     )
     server.add_argument(
         "-p", "--port",
@@ -72,8 +74,8 @@ Client Setup (mitm mode):
     server.add_argument(
         "-m", "--mode",
         choices=["reverse", "mitm"],
-        default="reverse",
-        help="Proxy mode: 'reverse' (change base_url) or 'mitm' (set HTTPS_PROXY, zero code changes) (default: reverse)",
+        default="mitm",
+        help="Proxy mode: 'reverse' (change base_url) or 'mitm' (set HTTPS_PROXY, zero code changes) (default: mitm)",
     )
     server.add_argument(
         "--system-proxy",
@@ -126,6 +128,13 @@ Client Setup (mitm mode):
         "-o", "--output",
         default="./llm_sniffer_logs",
         help="Directory for log files (default: ./llm_sniffer_logs)",
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"llm-sniffer {__version__}",
+        help="Show version number and exit",
     )
 
     # Display options

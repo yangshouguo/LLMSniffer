@@ -25,14 +25,7 @@ except ImportError:
 # afl-fuzz uses a dark terminal with green/red/yellow highlights
 # Main colors: green (good), red (crashes/errors), yellow (warnings), cyan (info)
 
-BANNER = r"""
-    ██╗     ██╗     ███╗   ███╗    ███████╗███╗   ██╗██╗███████╗███████╗███████╗██████╗
-    ██║     ██║     ████╗ ████║    ██╔════╝████╗  ██║██║██╔════╝██╔════╝██╔════╝██╔══██╗
-    ██║     ██║     ██╔████╔██║    ███████╗██╔██╗ ██║██║█████╗  █████╗  █████╗  ██████╔╝
-    ██║     ██║     ██║╚██╔╝██║    ╚════██║██║╚██╗██║██║██╔══╝  ██╔══╝  ██╔══╝  ██╔══██╗
-    ███████╗███████╗██║ ╚═╝ ██║    ███████║██║ ╚████║██║██║     ██║     ███████╗██║  ██║
-    ╚══════╝╚══════╝╚═╝     ╚═╝    ╚══════╝╚═╝  ╚═══╝╚═╝╚═╝     ╚═╝     ╚══════╝╚═╝  ╚═╝
-"""
+BANNER = "   ██╗     ██╗     ███╗   ███╗    ███████╗███╗   ██╗██╗███████╗███████╗███████╗██████╗   v0.1.0"
 
 HEADER_BAR = """
 ┌─ process timing ────────────────────────────────────┬─ overall results ─────┬─ model breakdown ────────────────────────────────────┐
@@ -129,7 +122,10 @@ class DisplayManager:
             if cap.error:
                 res_preview = f"ERROR: {cap.error[:80]}"
             elif cap.response_choices:
-                res_preview = cap.response_choices[0].get("content", "")[:80].replace("\n", " ")
+                content = cap.response_choices[0].get("content", "") or ""
+                res_preview = content[:80].replace("\n", " ")
+            elif cap.response_choices is not None:
+                res_preview = "(empty response)"
             else:
                 res_preview = "(waiting)"
             print(f"  [{cap.id}] {status} {cap.model} | {latency} | {tokens}tok")
@@ -150,7 +146,7 @@ class DisplayManager:
         # Split into sections
         layout.split(
             Layout(name="header", size=3),
-            Layout(name="banner", size=8),
+            Layout(name="banner", size=1),
             Layout(name="stats_bar", size=9),
             Layout(name="spacer", size=1),
             Layout(name="captures"),
@@ -175,7 +171,7 @@ class DisplayManager:
         return Panel(text, box=box.HEAVY, style="green")
 
     def _build_banner(self, stats: dict) -> Panel:
-        """Build the banner display."""
+        """Build the compact banner display."""
         banner_text = Text(BANNER, style="bold green")
         return Panel(banner_text, box=box.SQUARE, style="green")
 
@@ -256,6 +252,18 @@ class DisplayManager:
         with self._lock:
             display_captures = list(self._recent_captures)[:30]
 
+        if not display_captures:
+            table.add_row(
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                Text(" Waiting for LLM requests... Configure your client.", style="dim"),
+                "",
+            )
+
         for cap in display_captures:
             time_str = datetime.fromtimestamp(cap.timestamp).strftime("%H:%M:%S")
 
@@ -293,11 +301,15 @@ class DisplayManager:
             if cap.error:
                 response = Text(cap.error[:45], style="red")
             elif cap.response_choices:
-                content = cap.response_choices[0].get("content", "")
+                content = cap.response_choices[0].get("content", "") or ""
                 res_text = _truncate_middle(content, 40, 15)
                 response = Text(res_text, style="white")
+            elif cap.response_choices is not None:
+                # Empty list [] — response was received but had zero choices
+                response = Text("(empty response)", style="dim")
             else:
-                response = Text("(streaming ...)", style="dim")
+                # None — no response received yet (still waiting)
+                response = Text("(waiting for response)", style="dim")
 
             table.add_row(
                 cap.id,

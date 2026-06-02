@@ -13,6 +13,8 @@ LangChain, etc.) automatically route through the proxy.
 
 import asyncio
 import json
+import signal
+import socket
 import sys
 import time
 import queue
@@ -118,8 +120,13 @@ class LLMSnifferMitmAddon:
         )
 
         # Update with response
-        resp_body = resp.content or b"{}"
-        update_capture_with_response(cap, resp.status_code, resp_body, latency_ms)
+        resp_body = resp.content or b""
+        if not resp_body:
+            cap.error = "Empty response body (possibly interrupted stream)"
+            cap.status_code = resp.status_code
+            cap.latency_ms = latency_ms
+        else:
+            update_capture_with_response(cap, resp.status_code, resp_body, latency_ms)
 
         return cap
 
@@ -151,6 +158,7 @@ class MitmProxyRunner:
         self._capture_queue: queue.Queue = queue.Queue()
         self._running = False
         self._master = None
+        self._mitm_error: Exception | None = None
 
         # Stats tracking
         self._start_time = time.time()
@@ -272,8 +280,8 @@ class MitmProxyRunner:
             except (ImportError, PermissionError, OSError):
                 print(f"  export SSL_CERT_FILE={cert_path_str}")
 
-        # Node.js trust (Claude Code CLI, etc.)
-        print(f"\n  ── Node.js trust (Claude Code CLI, Copilot, etc.) ──")
+        # Node.js trust (Claude Code CLI — you are HERE)
+        print(f"\n  ── Node.js trust (Claude Code CLI ⬅ you need this!) ──")
         print(f"  export NODE_EXTRA_CA_CERTS={cert_path_str}")
 
         print()
@@ -320,22 +328,29 @@ class MitmProxyRunner:
         def _run_mitm():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            opts = Options(
-                listen_host=self.listen_host,
-                listen_port=self.listen_port,
-                mode=["regular"],
-            )
-            master = MitmMaster(opts, event_loop=loop)
-            master.addons.add(*default_addons())  # Required by mitmproxy
-            master.addons.add(addon)
-            self._master = master
-            loop.run_until_complete(master.run())
+            try:
+                opts = Options(
+                    listen_host=self.listen_host,
+                    listen_port=self.listen_port,
+                    mode=["regular"],
+                )
+                master = MitmMaster(opts, event_loop=loop)
+                master.addons.add(*default_addons())  # Required by mitmproxy
+                master.addons.add(addon)
+                self._master = master
+                loop.run_until_complete(master.run())
+            except Exception as e:
+                self._mitm_error = e
 
         mitm_thread = threading.Thread(target=_run_mitm, daemon=True, name="mitmproxy")
         mitm_thread.start()
 
-        # Wait for mitmproxy to start
-        time.sleep(1)
+        # Wait for mitmproxy to start — socket health check instead of blind sleep
+        self._wait_for_mitm_health(mitm_thread)
+
+        if self._mitm_error:
+            print(f"\n  ERROR: mitmproxy failed to start: {self._mitm_error}")
+            sys.exit(1)
 
         print(f"\n  LLM Sniffer [mitm mode] listening on http://{self.listen_host}:{self.listen_port}")
         print(f"  Logs: {self.logger.log_dir}")
@@ -347,8 +362,19 @@ class MitmProxyRunner:
         # --- Start TUI on main thread ---
         self.display.start()
 
+        # Handle SIGTERM like SIGINT so cleanup runs in Docker/systemd contexts
+        signal.signal(signal.SIGTERM, lambda signum, frame: self._handle_sigterm())
+
         try:
             while self._running:
+                # Check if mitm thread is still alive
+                if not mitm_thread.is_alive():
+                    error_msg = f"mitmproxy thread died unexpectedly"
+                    if self._mitm_error:
+                        error_msg += f": {self._mitm_error}"
+                    print(f"\n  ERROR: {error_msg}")
+                    break
+
                 # Process captures from queue
                 try:
                     cap = self._capture_queue.get(timeout=1)
@@ -369,3 +395,25 @@ class MitmProxyRunner:
             if self.system_proxy and sysproxy_available():
                 sysproxy_disable()
             print("\n\n  LLM Sniffer stopped.")
+
+    def _wait_for_mitm_health(self, mitm_thread: threading.Thread):
+        """Poll socket to confirm mitmproxy is listening, or detect early failure."""
+        for attempt in range(10):
+            if self._mitm_error:
+                return  # thread failed, will be caught by caller
+            if not mitm_thread.is_alive():
+                return  # thread died before starting
+            try:
+                with socket.create_connection(
+                    (self.listen_host, self.listen_port), timeout=0.5
+                ):
+                    return  # proxy is accepting connections
+            except (ConnectionRefusedError, OSError):
+                time.sleep(0.5)
+        # Timeout — check once more for a deferred error
+        if not self._mitm_error and not mitm_thread.is_alive():
+            self._mitm_error = RuntimeError("mitmproxy thread died before binding")
+
+    def _handle_sigterm(self):
+        """Trigger graceful shutdown on SIGTERM (Docker, systemd, CI)."""
+        raise KeyboardInterrupt()
