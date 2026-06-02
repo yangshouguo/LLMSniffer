@@ -43,11 +43,26 @@ HEADER_BAR = """
 """
 
 
+def _truncate_middle(text: str, head: int = 30, tail: int = 20) -> str:
+    """Truncate text showing first `head` and last `tail` chars.
+
+    Example: 'The quick brown fox jumps over the lazy dog'
+    -> 'The quick brown ... the lazy dog'
+    """
+    text = text.replace("\n", " ").replace("\r", " ").strip()
+    if len(text) <= head + tail:
+        return text
+    return text[:head] + "..." + text[-tail:]
+
+
 class DisplayManager:
     """Manages the afl-fuzz style terminal display."""
 
-    def __init__(self, filter_config: FilterConfig, no_tui: bool = False):
+    def __init__(self, filter_config: FilterConfig, mode: str = "reverse",
+                 listen_port: int = 8888, no_tui: bool = False):
         self.filter_config = filter_config
+        self.mode = mode
+        self.listen_port = listen_port
         self.no_tui = no_tui
         self.console = Console() if RICH_AVAILABLE else None
         self._live = None
@@ -93,14 +108,18 @@ class DisplayManager:
             status = f"[{cap.status_code}]" if cap.status_code else "[...]"
             latency = f"{cap.latency_ms:.0f}ms" if cap.latency_ms else "---"
             tokens = str(cap.total_tokens) if cap.total_tokens else "---"
+            # Request preview
+            user_msgs = [m.get("content", "") for m in cap.request_messages if m.get("role") == "user"]
+            req_preview = _truncate_middle(user_msgs[-1], 40, 20) if user_msgs else "(no user msg)"
             if cap.error:
-                summary = f"ERROR: {cap.error[:100]}"
+                res_preview = f"ERROR: {cap.error[:80]}"
             elif cap.response_choices:
-                summary = cap.response_choices[0].get("content", "")[:100].replace("\n", " ")
+                res_preview = cap.response_choices[0].get("content", "")[:80].replace("\n", " ")
             else:
-                user_msgs = [m.get("content", "") for m in cap.request_messages if m.get("role") == "user"]
-                summary = (user_msgs[-1][:100] if user_msgs else "(streaming)").replace("\n", " ")
-            print(f"  [{cap.id}] {status} {cap.model} | {latency} | {tokens}tok | {summary}")
+                res_preview = "(waiting)"
+            print(f"  [{cap.id}] {status} {cap.model} | {latency} | {tokens}tok")
+            print(f"         → {req_preview}")
+            print(f"         ← {res_preview}")
 
     def refresh(self, stats: dict):
         """Refresh the display with latest stats."""
@@ -211,70 +230,67 @@ class DisplayManager:
             padding=0,
         )
         table.add_column("#", width=9, style="dim")
-        table.add_column("Time", width=15, style="cyan")
-        table.add_column("Model", width=22, style="yellow")
-        table.add_column("Status", width=8)
-        table.add_column("Latency", width=10)
-        table.add_column("Tokens", width=10)
-        table.add_column("Messages", width=10)
-        table.add_column("API", width=28, style="dim")
-        table.add_column("Summary", width=40)
+        table.add_column("Time", width=10, style="cyan")
+        table.add_column("Model", width=16, style="yellow")
+        table.add_column("St", width=5)
+        table.add_column("Lat", width=8)
+        table.add_column("Tok", width=7)
+        table.add_column("Request (→)", width=35)
+        table.add_column("Response (←)", width=40)
 
         with self._lock:
-            display_captures = list(self._recent_captures)[:30]  # show last 30
+            display_captures = list(self._recent_captures)[:30]
 
         for cap in display_captures:
             time_str = datetime.fromtimestamp(cap.timestamp).strftime("%H:%M:%S")
 
-            # Status with color
+            # Status
             if cap.error:
                 status = Text(str(cap.status_code or "ERR"), style="bold red")
             elif cap.status_code and cap.status_code >= 400:
                 status = Text(str(cap.status_code), style="bold red")
             elif cap.status_code == 200:
-                status = Text("200 OK", style="bold green")
+                status = Text("200", style="bold green")
             else:
                 status = Text(str(cap.status_code or "---"), style="yellow")
 
-            # Latency
             latency_str = f"{cap.latency_ms:.0f}ms" if cap.latency_ms else "---"
-
-            # Tokens
             token_str = str(cap.total_tokens) if cap.total_tokens else "---"
 
-            # Message count
-            msg_str = str(len(cap.request_messages))
-
-            # Summary (first response choice or error)
-            if cap.error:
-                summary = Text(cap.error[:60], style="red")
-            elif cap.response_choices:
-                content = cap.response_choices[0].get("content", "")[:60]
-                summary = Text(content.replace("\n", " ")[:60], style="white")
+            # Request: show last user message (head + tail)
+            user_msgs = [
+                m.get("content", "")
+                for m in cap.request_messages
+                if isinstance(m, dict) and m.get("role") == "user"
+            ]
+            if user_msgs:
+                req_text = _truncate_middle(user_msgs[-1], 30, 15)
+                request = Text(req_text, style="dim white")
             else:
-                # Show last user message as summary
-                user_msgs = [
-                    m.get("content", "")
-                    for m in cap.request_messages
-                    if m.get("role") == "user"
-                ]
-                if user_msgs:
-                    summary = Text(
-                        user_msgs[-1][:60].replace("\n", " "), style="dim white"
-                    )
-                else:
-                    summary = Text("(streaming)", style="dim")
+                # Show system prompt or first message
+                first = cap.request_messages[0] if cap.request_messages else {}
+                req_text = _truncate_middle(str(first.get("content", "")), 30, 15)
+                request = Text(req_text, style="dim white")
+
+            # Response: first choice content
+            if cap.error:
+                response = Text(cap.error[:45], style="red")
+            elif cap.response_choices:
+                content = cap.response_choices[0].get("content", "")
+                res_text = _truncate_middle(content, 40, 15)
+                response = Text(res_text, style="white")
+            else:
+                response = Text("(streaming ...)", style="dim")
 
             table.add_row(
                 cap.id,
                 time_str,
-                cap.model[:20],
+                cap.model[:14],
                 status,
                 latency_str,
                 token_str,
-                msg_str,
-                cap.base_url[:26],
-                summary,
+                request,
+                response,
             )
 
         return Panel(
@@ -294,8 +310,13 @@ class DisplayManager:
         text.append(f"  Listening: {listen_addr}  ", style="bold green")
         text.append(f"|  Filters: {filter_info}  ", style="yellow")
         text.append(f"|  Logs: {log_dir}  ", style="dim")
-        text.append(f"|  Press ", style="white")
-        text.append("Ctrl+C", style="bold red")
-        text.append(" to stop  ", style="white")
+        text.append(f"|  Ctrl+C ", style="bold red")
+        text.append("to stop", style="white")
+
+        # Show copyable export command for mitm mode
+        if self.mode == "mitm":
+            text.append("\n")
+            text.append("  Client: ", style="bold cyan")
+            text.append(f"export HTTPS_PROXY=http://localhost:{self.listen_port}  ", style="bold white on dark_green")
 
         return Panel(text, box=box.HEAVY, style="green")

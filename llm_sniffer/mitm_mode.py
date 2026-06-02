@@ -136,7 +136,10 @@ class MitmProxyRunner:
         self.listen_port = listen_port
         self.filter_config = filter_config or FilterConfig()
         self.logger = CaptureLogger(log_dir)
-        self.display = DisplayManager(self.filter_config, no_tui=no_tui)
+        self.display = DisplayManager(
+            self.filter_config, mode="mitm",
+            listen_port=listen_port, no_tui=no_tui,
+        )
         self._capture_queue: queue.Queue = queue.Queue()
         self._running = False
         self._master = None
@@ -178,6 +181,50 @@ class MitmProxyRunner:
         # Update display
         self.display.add_capture(cap, self._get_stats_snapshot())
 
+    def _setup_mitm_cert(self):
+        """Ensure mitmproxy CA cert exists. Print trust instructions if needed."""
+        import os
+        import subprocess
+
+        cert_dir = Path.home() / ".mitmproxy"
+        cert_path = cert_dir / "mitmproxy-ca-cert.pem"
+
+        # mitmproxy auto-generates the cert on first run, but we can
+        # trigger it early by running a quick mitmdump in the background
+        if not cert_path.exists():
+            print("  Generating mitmproxy CA certificate ...")
+            cert_dir.mkdir(parents=True, exist_ok=True)
+            # Run mitmdump briefly to trigger cert generation
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "mitmproxy", "--version"],
+                    capture_output=True, timeout=10,
+                )
+            except Exception:
+                pass  # cert will be generated when mitm thread starts
+
+        # Check if cert is trusted on macOS
+        if sys.platform == "darwin" and cert_path.exists():
+            try:
+                result = subprocess.run(
+                    ["security", "verify-cert", "-c", str(cert_path)],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode != 0:
+                    self._print_cert_trust_instructions(cert_path)
+            except Exception:
+                self._print_cert_trust_instructions(cert_path)
+
+    def _print_cert_trust_instructions(self, cert_path):
+        """Print instructions for trusting the mitmproxy CA cert."""
+        print(f"\n  ╔══════════════════════════════════════════════════════════════╗")
+        print(f"  ║  mitmproxy CA cert is NOT trusted yet                     ║")
+        print(f"  ║  HTTPS traffic will fail with certificate errors.          ║")
+        print(f"  ║  Trust it now (macOS, needs sudo):                         ║")
+        print(f"  ║                                                            ║")
+        print(f"  ║  sudo security add-trusted-cert -d -p ssl {cert_path}")
+        print(f"  ╚══════════════════════════════════════════════════════════════╝\n")
+
     def run(self):
         """Start the mitmproxy-based sniffer (blocking call)."""
         try:
@@ -191,6 +238,9 @@ class MitmProxyRunner:
             sys.exit(1)
 
         self._running = True
+
+        # --- Ensure mitmproxy CA cert exists and is trusted ---
+        self._setup_mitm_cert()
 
         # --- Start mitmproxy in background thread ---
         # mitmproxy needs its own event loop. We create everything

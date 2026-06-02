@@ -31,7 +31,10 @@ class LLMProxy:
         self.default_target = default_target
         self.filter_config = filter_config or FilterConfig()
         self.logger = CaptureLogger(log_dir)
-        self.display = DisplayManager(self.filter_config, no_tui=no_tui)
+        self.display = DisplayManager(
+            self.filter_config, mode="reverse",
+            listen_port=listen_port, no_tui=no_tui,
+        )
 
         # Stats tracking
         self._captures: list[LLMCapture] = []
