@@ -43,6 +43,21 @@ HEADER_BAR = """
 """
 
 
+def _content_to_str(content) -> str:
+    """Normalize OpenAI message content (string or list of parts) to string."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict):
+                parts.append(part.get("text", "") or part.get("type", ""))
+            else:
+                parts.append(str(part))
+        return " ".join(parts)
+    return str(content) if content else ""
+
+
 def _truncate_middle(text: str, head: int = 30, tail: int = 20) -> str:
     """Truncate text showing first `head` and last `tail` chars.
 
@@ -109,7 +124,7 @@ class DisplayManager:
             latency = f"{cap.latency_ms:.0f}ms" if cap.latency_ms else "---"
             tokens = str(cap.total_tokens) if cap.total_tokens else "---"
             # Request preview
-            user_msgs = [m.get("content", "") for m in cap.request_messages if m.get("role") == "user"]
+            user_msgs = [_content_to_str(m.get("content", "")) for m in cap.request_messages if m.get("role") == "user"]
             req_preview = _truncate_middle(user_msgs[-1], 40, 20) if user_msgs else "(no user msg)"
             if cap.error:
                 res_preview = f"ERROR: {cap.error[:80]}"
@@ -259,7 +274,7 @@ class DisplayManager:
 
             # Request: show last user message (head + tail)
             user_msgs = [
-                m.get("content", "")
+                _content_to_str(m.get("content", ""))
                 for m in cap.request_messages
                 if isinstance(m, dict) and m.get("role") == "user"
             ]
@@ -269,7 +284,9 @@ class DisplayManager:
             else:
                 # Show system prompt or first message
                 first = cap.request_messages[0] if cap.request_messages else {}
-                req_text = _truncate_middle(str(first.get("content", "")), 30, 15)
+                req_text = _truncate_middle(
+                    _content_to_str(first.get("content", "")), 30, 15,
+                )
                 request = Text(req_text, style="dim white")
 
             # Response: first choice content
