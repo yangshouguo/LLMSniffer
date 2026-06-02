@@ -106,6 +106,8 @@ mitm Mode:
 
 ## TUI Display
 
+![LLM Sniffer TUI](.img/ui.png)
+
 The terminal UI shows (afl-fuzz style):
 - **Banner**: Tool name and version
 - **Process Timing**: Uptime, last capture, capture rate
