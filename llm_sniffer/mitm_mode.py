@@ -28,6 +28,12 @@ from .capture import (
 from .filter import FilterConfig
 from .logger import CaptureLogger
 from .display import DisplayManager
+from .system_proxy import (
+    available as sysproxy_available,
+    enable_system_proxy as sysproxy_enable,
+    disable_system_proxy as sysproxy_disable,
+    print_client_instructions,
+)
 
 # ── mitmproxy addon ──────────────────────────────────────────────────────────
 
@@ -131,11 +137,13 @@ class MitmProxyRunner:
         filter_config: FilterConfig = None,
         log_dir: str = "./llm_sniffer_logs",
         no_tui: bool = False,
+        system_proxy: bool = False,
     ):
         self.listen_host = listen_host
         self.listen_port = listen_port
         self.filter_config = filter_config or FilterConfig()
         self.logger = CaptureLogger(log_dir)
+        self.system_proxy = system_proxy
         self.display = DisplayManager(
             self.filter_config, mode="mitm",
             listen_port=listen_port, no_tui=no_tui,
@@ -302,6 +310,12 @@ class MitmProxyRunner:
         # --- Ensure mitmproxy CA cert exists and is trusted ---
         self._setup_mitm_cert()
 
+        # --- Optionally set macOS system proxy (catches desktop apps) ---
+        if self.system_proxy and sysproxy_available():
+            sysproxy_enable(self.listen_port)
+        elif self.system_proxy:
+            print("  ⚠ --system-proxy is only supported on macOS")
+
         # --- Start mitmproxy in background thread ---
         # mitmproxy needs its own event loop. We create everything
         # inside the thread to satisfy asyncio requirements.
@@ -328,11 +342,9 @@ class MitmProxyRunner:
         time.sleep(1)
 
         print(f"\n  LLM Sniffer [mitm mode] listening on http://{self.listen_host}:{self.listen_port}")
-        print(f"  Set in your client environment:")
-        print(f"    export HTTPS_PROXY=http://localhost:{self.listen_port}")
-        print(f"    export HTTP_PROXY=http://localhost:{self.listen_port}")
-        print(f"  Then run your LLM application normally - no code changes needed!")
         print(f"  Logs: {self.logger.log_dir}")
+        # --- Show client setup guide ---
+        print_client_instructions(self.listen_port)
         # --- Wait for user confirmation ---
         self._wait_for_enter()
 
@@ -358,4 +370,6 @@ class MitmProxyRunner:
             self.display.stop()
             if self._master:
                 self._master.shutdown()
+            if self.system_proxy and sysproxy_available():
+                sysproxy_disable()
             print("\n\n  LLM Sniffer stopped.")

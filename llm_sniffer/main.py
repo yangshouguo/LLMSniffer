@@ -5,6 +5,12 @@ import sys
 from .proxy import LLMProxy
 from .mitm_mode import MitmProxyRunner
 from .filter import FilterConfig
+from .system_proxy import (
+    available as sysproxy_available,
+    enable_system_proxy as sysproxy_enable,
+    disable_system_proxy as sysproxy_disable,
+    print_client_instructions,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -19,11 +25,10 @@ Examples:
   llm-sniffer                       # default: forward to api.openai.com
   llm-sniffer -p 9999 -t https://api.anthropic.com
 
-  # Non-intrusive mitm mode (just set env var, no code changes)
-  llm-sniffer --mode mitm
-  # Then in another terminal:
-  #   export HTTPS_PROXY=http://localhost:8888
-  #   python my_llm_app.py          # runs normally!
+  # Non-intrusive mitm mode + auto system proxy (catches ALL desktop apps)
+  llm-sniffer --mode mitm --system-proxy
+  # Now Claude Desktop, Cursor, Copilot all route through the sniffer
+  # automatically - no per-app configuration needed!
 
   # Filter to only show gpt-4 calls
   llm-sniffer --filter-model "gpt-4*"
@@ -40,9 +45,9 @@ Client Setup (reverse mode):
   3. Or add header 'X-LLM-Target: https://your-api.com' to override
 
 Client Setup (mitm mode):
-  1. Set env: export HTTPS_PROXY=http://localhost:8888
+  1. export HTTPS_PROXY=http://localhost:8888
   2. Run your LLM app normally - NO code changes needed!
-  3. Works with all LLM SDKs (OpenAI, Anthropic, LangChain, etc.)
+  3. Add --system-proxy to catch desktop apps automatically
 """,
     )
 
@@ -69,6 +74,11 @@ Client Setup (mitm mode):
         choices=["reverse", "mitm"],
         default="reverse",
         help="Proxy mode: 'reverse' (change base_url) or 'mitm' (set HTTPS_PROXY, zero code changes) (default: reverse)",
+    )
+    server.add_argument(
+        "--system-proxy",
+        action="store_true",
+        help="[mitm mode] Set macOS system proxy automatically - catches desktop apps (Claude Desktop, Cursor, Copilot, etc.)",
     )
 
     # Filter options
@@ -143,6 +153,7 @@ def main():
             filter_config=filter_config,
             log_dir=args.output,
             no_tui=args.no_tui,
+            system_proxy=args.system_proxy,
         )
     else:
         runner = LLMProxy(
